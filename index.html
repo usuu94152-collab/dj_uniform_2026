@@ -299,9 +299,25 @@ const p2 = n => String(n).padStart(2,'0');
 
 function todayStr(){ const d=new Date(),D=DAY_KO; return `${d.getFullYear()}.${p2(d.getMonth()+1)}.${p2(d.getDate())} (${D[d.getDay()]})`; }
 function dateKey(d){ d=d||new Date(); return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`; }
-function weekMonKey(d){ d=d||new Date(); const day=d.getDay(); const m=new Date(d); m.setDate(d.getDate()-(day===0?6:day-1)); return dateKey(m); }
-function weekRange(mk){ const m=new Date(mk),f=new Date(m); f.setDate(m.getDate()+4); return `${m.getMonth()+1}/${m.getDate()} ~ ${f.getMonth()+1}/${f.getDate()}`; }
-function weekDays(mk){ const m=new Date(mk),r=[]; for(let i=0;i<5;i++){const d=new Date(m);d.setDate(m.getDate()+i);r.push(dateKey(d));} return r; }
+
+// YYYY-MM-DD 문자열을 안전하게 Date로 변환
+function parseDate(str){ const [y,m,d]=str.split('-').map(Number); return new Date(y, m-1, d); }
+
+function weekMonKey(d){
+  const dd = (typeof d==='string') ? parseDate(d) : (d||new Date());
+  const day=dd.getDay();
+  const m=new Date(dd); m.setDate(dd.getDate()-(day===0?6:day-1));
+  return dateKey(m);
+}
+function weekRange(mk){
+  const m=parseDate(mk), f=new Date(m); f.setDate(m.getDate()+4);
+  return `${m.getMonth()+1}/${m.getDate()} ~ ${f.getMonth()+1}/${f.getDate()}`;
+}
+function weekDays(mk){
+  const m=parseDate(mk),r=[];
+  for(let i=0;i<5;i++){const d=new Date(m);d.setDate(m.getDate()+i);r.push(dateKey(d));}
+  return r;
+}
 
 document.getElementById('header-date').textContent = todayStr();
 
