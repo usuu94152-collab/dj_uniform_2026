@@ -369,10 +369,14 @@ async function loadLogs(){
     // 날짜 파싱 - 문자열 또는 Date 객체 모두 처리
     let date = '';
     const rawDate = row.c[0].v;
-    if(typeof rawDate === 'string'){
+    if(typeof rawDate === 'string' && rawDate.startsWith('Date(')){
+      // "Date(2026,3,7)" → "2026-04-07" (월은 0부터 시작)
+      const parts = rawDate.replace('Date(','').replace(')','').split(',');
+      const y = parts[0], m = String(parseInt(parts[1])+1).padStart(2,'0'), d = String(parts[2]).padStart(2,'0');
+      date = `${y}-${m}-${d}`;
+    } else if(typeof rawDate === 'string'){
       date = rawDate.trim();
     } else if(typeof rawDate === 'number'){
-      // 구글 시트 날짜 시리얼 번호 처리
       const d = new Date(Math.round((rawDate - 25569) * 86400 * 1000));
       date = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
     } else {
