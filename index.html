@@ -362,10 +362,24 @@ async function loadLogs(){
   const data = await readSheet('기록');
   if(!data || !data.table || !data.table.rows || !data.table.rows.length) return false;
   const newLogs = {};
+  console.log('기록 rows 수:', data.table.rows.length);
+  console.log('첫 행 샘플:', JSON.stringify(data.table.rows[0]));
   data.table.rows.forEach((row, idx)=>{
-    if(!row.c || !row.c[0] || !row.c[0].v) return;
-    if(idx===0 && isNaN(parseInt(String(row.c[0].v).split('-')[0]))) return; // 헤더 건너뛰기
-    const date  = String(row.c[0].v).trim();
+    if(!row.c || !row.c[0] || row.c[0].v === null || row.c[0].v === undefined) return;
+    // 날짜 파싱 - 문자열 또는 Date 객체 모두 처리
+    let date = '';
+    const rawDate = row.c[0].v;
+    if(typeof rawDate === 'string'){
+      date = rawDate.trim();
+    } else if(typeof rawDate === 'number'){
+      // 구글 시트 날짜 시리얼 번호 처리
+      const d = new Date(Math.round((rawDate - 25569) * 86400 * 1000));
+      date = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+    } else {
+      date = String(rawDate).trim();
+    }
+    // 헤더 건너뛰기
+    if(date === '날짜' || date === 'A (날짜)') return;
     const grade = parseInt(row.c[1] ? row.c[1].v : 0);
     const cls   = parseInt(row.c[2] ? row.c[2].v : 0);
     const name  = row.c[3] ? String(row.c[3].v).trim() : '';
@@ -376,6 +390,8 @@ async function loadLogs(){
     if(!newLogs[date].violations[k].students.includes(name))
       newLogs[date].violations[k].students.push(name);
   });
+  console.log('파싱된 logs:', JSON.stringify(newLogs));
+  if(Object.keys(newLogs).length === 0) return false;
   dailyLogs = newLogs;
   localStorage.setItem('logs_cache', JSON.stringify(dailyLogs));
   return true;
