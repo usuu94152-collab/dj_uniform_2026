@@ -413,12 +413,17 @@ async function pushLog(dateStr, violations){
     v.students.forEach(name => rows.push([dateStr, v.grade, v.cls, name]));
   });
   try{
-    await fetch(APPS_URL, {
-      method: 'POST', mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
+    const res = await fetch(APPS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({ action: 'saveLog', rows, deleteDate: dateStr })
     });
-  }catch(e){}
+    const result = await res.json();
+    if(result.status !== 'ok') throw new Error(result.msg||'저장 실패');
+  }catch(e){
+    console.error('pushLog error:', e);
+    throw e;
+  }
 }
 
 // ── 체크 저장 ──
@@ -438,23 +443,33 @@ async function saveDaily(){
     localStorage.setItem('logs_cache', JSON.stringify(dailyLogs));
     buildWeekSel();
     setStatus('busy', '시트에서 삭제 중...');
-    await pushLog(key, {});
-    setStatus('ok', `시트 연결됨 · ${students.length}명`);
-    showToast('오늘 기록이 삭제됐어요');
+    try{
+      await pushLog(key, {});
+      setStatus('ok', `시트 연결됨 · ${students.length}명`);
+      showToast('오늘 기록이 삭제됐어요');
+    }catch(e){
+      setStatus('error', '시트 저장 실패');
+      showToast('❌ 시트 저장 실패 — F12 콘솔 확인');
+    }
   } else {
     const isUpdate = !!dailyLogs[key];
     dailyLogs[key] = { dateStr: todayStr(), violations: viols, note: document.getElementById('note').value };
     localStorage.setItem('logs_cache', JSON.stringify(dailyLogs));
     buildWeekSel();
     setStatus('busy', '시트에 저장 중...');
-    await pushLog(key, viols);
-    // 5초 후 시트에서 다시 불러와서 다른 기기 데이터와 합치기
-    setTimeout(async ()=>{
-      await loadLogs();
-      buildWeekSel();
+    try{
+      await pushLog(key, viols);
       setStatus('ok', `시트 연결됨 · ${students.length}명`);
-    }, 5000);
-    showToast(isUpdate ? '오늘 기록이 수정됐어요 ✓' : '오늘 기록이 저장됐어요 ✓');
+      showToast(isUpdate ? '오늘 기록이 수정됐어요 ✓' : '오늘 기록이 저장됐어요 ✓');
+      // 3초 후 시트에서 다시 불러와서 다른 기기 데이터와 합치기
+      setTimeout(async ()=>{
+        await loadLogs();
+        buildWeekSel();
+      }, 3000);
+    }catch(e){
+      setStatus('error', '시트 저장 실패');
+      showToast('❌ 시트 저장 실패 — Apps Script 재배포 필요');
+    }
   }
   updateStats();
 }
