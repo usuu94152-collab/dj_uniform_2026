@@ -157,6 +157,11 @@ textarea:focus { border-color: var(--accent); }
 .copy-btn.copied { background: var(--success-bg); color: var(--success-text); border-color: var(--success); }
 .mc-body { padding: 14px; font-size: 13px; line-height: 1.9; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
 
+/* 메시지 좌우 탭 */
+.msg-tabs { display: flex; gap: 6px; margin-bottom: 12px; background: var(--surface2); border-radius: var(--radius); padding: 4px; }
+.msg-tab { flex: 1; padding: 9px 12px; border: none; background: transparent; font-family: 'Noto Sans KR', sans-serif; font-size: 13px; font-weight: 700; color: var(--text3); cursor: pointer; border-radius: 8px; transition: all 0.15s; }
+.msg-tab.active { background: var(--surface); color: var(--accent); box-shadow: var(--shadow); }
+
 /* 문구 설정 */
 .var-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .var-tag { font-size: 12px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--border2); background: var(--surface2); color: var(--text); cursor: pointer; font-family: 'Courier New', monospace; transition: all 0.15s; }
@@ -239,8 +244,12 @@ textarea:focus { border-color: var(--accent); }
     <div class="section-header"><div class="section-title">일별 기록</div></div>
     <div id="day-log-area"><div class="empty"><strong>기록 없음</strong>체크 탭에서 매일 저장하면 쌓입니다.</div></div>
     <div class="divider"></div>
-    <div class="section-header"><div class="section-title">담임별 전달 메시지</div></div>
+    <div class="msg-tabs">
+      <button class="msg-tab active" id="mtab-class" onclick="switchMsgTab('class')">담임별 전달 메시지</button>
+      <button class="msg-tab" id="mtab-grade" onclick="switchMsgTab('grade')">학년별 전달 메시지</button>
+    </div>
     <div id="weekly-msg-area"><div class="empty"><strong>메시지 없음</strong>이 주 기록이 있어야 생성됩니다.</div></div>
+    <div id="weekly-msg-grade-area" style="display:none;"><div class="empty"><strong>메시지 없음</strong>이 주 기록이 있어야 생성됩니다.</div></div>
   </div>
 
   <!-- 문구 설정 탭 -->
@@ -287,11 +296,22 @@ const DEFAULT_TPL =
 총 {총건수}건 확인되었습니다.
 확인 및 지도 부탁드립니다. 감사합니다.`;
 
+const GRADE_TPL =
+`선생님, 안녕하세요.
+
+이번 주({주간범위}) 등교지도 중 {학년}학년 교복 미착용 현황을 안내드립니다.
+
+• {누적목록}
+
+총 {총건수}건 확인되었습니다.
+확인 및 지도 부탁드립니다. 감사합니다.`;
+
 // ── 상태 ──
 let students = [];
 let dailyLogs = {}; // { 'YYYY-MM-DD': { dateStr, violations: { 'grade-cls': { grade,cls,students:[] } } } }
 let checked  = new Set();
 let selGrade = null, selCls = null;
+let msgTab = 'class';
 let template = localStorage.getItem('tpl_v2') || DEFAULT_TPL;
 
 const DAY_KO = ['일','월','화','수','목','금','토'];
@@ -609,6 +629,7 @@ function renderWeekly(){
   if(!dayEntries.length){
     document.getElementById('day-log-area').innerHTML='<div class="empty"><strong>이 주 기록 없음</strong>체크 탭에서 매일 저장하면 쌓입니다.</div>';
     document.getElementById('weekly-msg-area').innerHTML='<div class="empty"><strong>메시지 없음</strong>기록이 있어야 생성됩니다.</div>';
+    document.getElementById('weekly-msg-grade-area').innerHTML='<div class="empty"><strong>메시지 없음</strong>기록이 있어야 생성됩니다.</div>';
     return;
   }
 
@@ -660,6 +681,46 @@ function renderWeekly(){
   });
   const allEl = document.getElementById(allId);
   if(allEl) allEl.dataset.msg = allMsgs.join('\n\n──────────────\n\n');
+
+  // 학년별 집계 (반 정보 포함)
+  const byGrade = {};
+  dayEntries.forEach(({log})=>{
+    Object.values(log.violations).forEach(v=>{
+      if(!byGrade[v.grade]) byGrade[v.grade] = { grade:v.grade, countMap:{} };
+      v.students.forEach(name=>{
+        const key = `${v.cls}반 ${name}`;
+        byGrade[v.grade].countMap[key] = (byGrade[v.grade].countMap[key]||0)+1;
+      });
+    });
+  });
+
+  let gMsgHtml = ''; const allGMsgs = [];
+  Object.entries(byGrade).sort((a,b)=>a[0]-b[0]).forEach(([g,info])=>{
+    const msg = buildGradeMsg(info, range); allGMsgs.push(msg);
+    const total = Object.values(info.countMap).reduce((s,n)=>s+n,0);
+    const repeated = Object.values(info.countMap).filter(n=>n>1).length;
+    const cardId = 'gcard_' + g;
+    gMsgHtml += `<div class="msg-card" id="${cardId}">
+      <div class="mc-head">
+        <div>
+          <div class="mc-title">${info.grade}학년 전체</div>
+          <div class="mc-sub">총 ${total}건 · ${Object.keys(info.countMap).length}명${repeated?` · 반복 ${repeated}명`:''}</div>
+        </div>
+        <button class="copy-btn" onclick="copyCard('${cardId}')">복사</button>
+      </div>
+      <div class="mc-body">${msg}</div>
+    </div>`;
+  });
+  const gAllId = 'gcard_all';
+  gMsgHtml += `<div id="${gAllId}"><div class="action-row" style="margin-top:0;"><button class="btn primary" onclick="copyCard('${gAllId}')">전체 복사</button></div></div>`;
+  document.getElementById('weekly-msg-grade-area').innerHTML = gMsgHtml;
+
+  Object.entries(byGrade).forEach(([g,info])=>{
+    const el = document.getElementById('gcard_'+g);
+    if(el) el.dataset.msg = buildGradeMsg(info, range);
+  });
+  const gAllEl = document.getElementById(gAllId);
+  if(gAllEl) gAllEl.dataset.msg = allGMsgs.join('\n\n──────────────\n\n');
 }
 
 function buildMsg(info, range){
@@ -667,6 +728,14 @@ function buildMsg(info, range){
   const list  = Object.entries(info.countMap).sort((a,b)=>b[1]-a[1]).map(([name,cnt])=>cnt>1?`${name} ${cnt}회`:name).join(', ');
   return template
     .replace(/\{학년\}/g, info.grade).replace(/\{반\}/g, info.cls)
+    .replace(/\{주간범위\}/g, range).replace(/\{누적목록\}/g, list).replace(/\{총건수\}/g, total);
+}
+
+function buildGradeMsg(info, range){
+  const total = Object.values(info.countMap).reduce((s,n)=>s+n,0);
+  const list  = Object.entries(info.countMap).sort((a,b)=>b[1]-a[1]).map(([name,cnt])=>cnt>1?`${name} ${cnt}회`:name).join(', ');
+  return GRADE_TPL
+    .replace(/\{학년\}/g, info.grade)
     .replace(/\{주간범위\}/g, range).replace(/\{누적목록\}/g, list).replace(/\{총건수\}/g, total);
 }
 
@@ -706,6 +775,15 @@ function switchTab(n){
   document.getElementById(`tab-${n}`).classList.add('active');
   if(n==='weekly'){ buildWeekSel(); renderWeekly(); }
   if(n==='tpl'){ document.getElementById('tpl-input').value=template; updatePreview(); }
+}
+
+// ── 메시지 좌우 탭 ──
+function switchMsgTab(t){
+  msgTab = t;
+  document.getElementById('mtab-class').classList.toggle('active', t==='class');
+  document.getElementById('mtab-grade').classList.toggle('active', t==='grade');
+  document.getElementById('weekly-msg-area').style.display = t==='class' ? '' : 'none';
+  document.getElementById('weekly-msg-grade-area').style.display = t==='grade' ? '' : 'none';
 }
 
 // ── 토스트 ──
