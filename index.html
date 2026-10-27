@@ -174,11 +174,35 @@ textarea:focus { border-color: var(--accent); }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1a1a18; color: #fff; padding: 10px 20px; border-radius: 24px; font-size: 13px; font-weight: 500; opacity: 0; transition: opacity 0.25s; pointer-events: none; z-index: 9999; white-space: nowrap; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
 .toast.show { opacity: 1; }
 
+/* 로그인 */
+.login-screen { display: none; min-height: 100vh; align-items: center; justify-content: center; padding: 16px; }
+body.locked .login-screen { display: flex; }
+body.locked .app-header, body.locked .status-bar, body.locked .tab-nav, body.locked .content { display: none; }
+.login-card { width: 100%; max-width: 320px; background: var(--surface); border-radius: var(--radius-lg); border: 1px solid var(--border); box-shadow: var(--shadow); padding: 24px 20px; display: flex; flex-direction: column; gap: 12px; }
+.login-card .app-logo { font-size: 20px; text-align: center; }
+.login-desc { font-size: 12px; color: var(--text3); text-align: center; }
+.login-card input[type=password] { width: 100%; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--border2); font-size: 14px; font-family: 'Noto Sans KR', sans-serif; outline: none; }
+.login-card input[type=password]:focus { border-color: var(--accent); }
+.login-remember { font-size: 12px; color: var(--text2); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.login-err { font-size: 12px; color: var(--danger); text-align: center; min-height: 16px; }
+.status-actions { display: flex; gap: 6px; }
+
 /* 반응형 */
 @media (max-width: 480px) { .tab-btn { padding: 12px 10px; font-size: 12px; } .content { padding: 14px 12px 60px; } }
 </style>
 </head>
-<body>
+<body class="locked">
+
+<div class="login-screen" id="login-screen">
+  <form class="login-card" onsubmit="doLogin(event)">
+    <div class="app-logo">교복<span>체크</span></div>
+    <div class="login-desc">비밀번호를 입력하세요</div>
+    <input type="password" id="login-pw" autocomplete="current-password" placeholder="비밀번호" required>
+    <label class="login-remember"><input type="checkbox" id="login-remember" checked> 이 기기에서 로그인 유지 (30일)</label>
+    <button class="btn primary" type="submit" id="login-btn">로그인</button>
+    <div class="login-err" id="login-err"></div>
+  </form>
+</div>
 
 <header class="app-header">
   <div class="app-logo">교복<span>체크</span></div>
@@ -190,7 +214,10 @@ textarea:focus { border-color: var(--accent); }
     <div class="status-dot" id="status-dot"></div>
     <span id="status-text">시트 연결 중...</span>
   </div>
-  <button class="sync-btn" onclick="syncAll()">🔄 새로고침</button>
+  <div class="status-actions">
+    <button class="sync-btn" onclick="syncAll()">🔄 새로고침</button>
+    <button class="sync-btn" onclick="logout()">로그아웃</button>
+  </div>
 </div>
 
 <nav class="tab-nav">
@@ -225,7 +252,7 @@ textarea:focus { border-color: var(--accent); }
       <textarea id="note" style="min-height:50px;" placeholder="특이사항 입력..."></textarea>
     </div>
     <div class="action-row">
-      <button class="btn" onclick="clearChecked()">초기화</button>
+      <button class="btn" onclick="revertChecked()">되돌리기</button>
       <button class="btn primary" onclick="saveDaily()">오늘 기록 저장</button>
     </div>
   </div>
@@ -281,9 +308,7 @@ textarea:focus { border-color: var(--accent); }
 // ══════════════════════════════════════════
 // 설정값
 // ══════════════════════════════════════════
-const SHEET_ID  = '1ik4BJZsIdVzRRCtwRLoBRtLZ6PEYmzNbvVpN_jgh3N8';
 const APPS_URL  = 'https://script.google.com/macros/s/AKfycbxg6mXX5byQsaMnhUCO5frJfs5rMqqqqt5fq0vN7eMG4At_OSnbqo44FVsmoXw0VrgZRA/exec';
-const READ_URL  = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=`;
 // ══════════════════════════════════════════
 
 const DEFAULT_TPL =
@@ -309,7 +334,9 @@ const GRADE_TPL =
 // ── 상태 ──
 let students = [];
 let dailyLogs = {}; // { 'YYYY-MM-DD': { dateStr, violations: { 'grade-cls': { grade,cls,students:[] } } } }
-let checked  = new Set();
+let checked  = new Set(); // 오늘 미착용 체크 (키: 학년|반|이름)
+let baseline = new Set(); // 시트에 저장된 오늘 기록 — 저장 시 이것과 비교해 추가·해제분만 전송
+let dirty    = false;     // 저장하지 않은 체크 변경 여부
 let selGrade = null, selCls = null;
 let msgTab = 'class';
 let template = localStorage.getItem('tpl_v2') || DEFAULT_TPL;
@@ -339,9 +366,13 @@ function weekDays(mk){
   return r;
 }
 
-document.getElementById('header-date').textContent = todayStr();
+let currentDay = dateKey();
 
-const getGrades  = () => [...new Set(students.map(s=>s.grade))].sort((a,b)=>a-b);
+const esc  = s => String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const skey = (grade, cls, name) => `${grade}|${cls}|${name}`;
+function fromKey(k){ const [g,c,...n]=k.split('|'); return { grade: +g, cls: +c, name: n.join('|') }; }
+
+const getGrades = () => [...new Set(students.map(s=>s.grade))].sort((a,b)=>a-b);
 const getClasses = g  => [...new Set(students.filter(s=>s.grade===g).map(s=>s.cls))].sort((a,b)=>a-b);
 
 // ── 상태 표시 ──
@@ -351,184 +382,168 @@ function setStatus(state, text){
   dot.className = 'status-dot' + (state==='ok'?' ok':state==='busy'?' busy':state==='error'?' error':'');
 }
 
-// ── 시트 읽기 ──
-async function readSheet(name){
+// ── 인증 ──
+const TOKEN_KEY = 'auth_token';
+const CACHE_STU = 'students_cache_v2', CACHE_LOG = 'logs_cache_v2';
+class AuthError extends Error {}
+
+function getToken(){ return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || ''; }
+function clearAuth(){
+  [TOKEN_KEY, CACHE_STU, CACHE_LOG, 'students_cache', 'logs_cache'].forEach(k=>localStorage.removeItem(k));
+  sessionStorage.removeItem(TOKEN_KEY);
+}
+function lock(){ document.body.classList.add('locked'); setTimeout(()=>document.getElementById('login-pw').focus(), 0); }
+function unlock(){ document.body.classList.remove('locked'); document.getElementById('login-err').textContent = ''; }
+
+// Apps Script 호출 — text/plain으로 보내야 CORS 사전요청 없이 동작
+async function api(action, body){
+  const res = await fetch(APPS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(Object.assign({ action, token: getToken() }, body)),
+  });
+  const data = await res.json();
+  if(data.status === 'unauthorized') throw new AuthError('인증 만료');
+  return data;
+}
+
+async function doLogin(ev){
+  ev.preventDefault();
+  const pw = document.getElementById('login-pw'), err = document.getElementById('login-err'), btn = document.getElementById('login-btn');
+  err.textContent = ''; btn.disabled = true; btn.textContent = '확인 중...';
   try{
-    const res  = await fetch(READ_URL + encodeURIComponent(name) + '&t=' + Date.now());
-    const text = await res.text();
-    // {"version" 시작 위치를 찾아서 그 뒤 } 까지 추출
-    const start = text.indexOf('{"version"');
-    if(start === -1) return null;
-    // 끝에서 ); 또는 ) 제거
-    let end = text.lastIndexOf('}');
-    if(end === -1) return null;
-    const clean = text.slice(start, end + 1);
-    return JSON.parse(clean);
-  }catch(e){ console.error('readSheet error:', e); return null; }
-}
-
-// ── 학생 불러오기 ──
-async function loadStudents(){
-  const data = await readSheet('학생');
-  if(!data || !data.table || !data.table.rows || !data.table.rows.length) return false;
-  const rows = data.table.rows;
-  const newStudents = [];
-  rows.forEach((row, idx)=>{
-    if(!row.c || !row.c[0] || !row.c[0].v) return;
-    if(idx===0 && isNaN(parseInt(row.c[0].v))) return; // 헤더 건너뛰기
-    const grade = parseInt(row.c[0].v);
-    const cls   = parseInt(row.c[1] ? row.c[1].v : 0);
-    const num   = parseInt(row.c[2] ? row.c[2].v : 0) || 0;
-    const name  = row.c[3] ? String(row.c[3].v).trim() : '';
-    const genderRaw = row.c[4] ? String(row.c[4].v).trim() : '';
-    const gender = (genderRaw === '여' || genderRaw === '여자') ? 'f' : 'm';
-    if(!grade || !cls || !name) return;
-    newStudents.push({ id: String(grade*10000+cls*100+num), grade, cls, num, name, gender });
-  });
-  if(newStudents.length > 0){
-    students = newStudents;
-    localStorage.setItem('students_cache', JSON.stringify(students));
-    return true;
-  }
-  return false;
-}
-
-// ── 기록 불러오기 ──
-async function loadLogs(){
-  const data = await readSheet('기록');
-  if(!data || !data.table || !data.table.rows || !data.table.rows.length) return false;
-  const newLogs = {};
-  console.log('기록 rows 수:', data.table.rows.length);
-  console.log('첫 행 샘플:', JSON.stringify(data.table.rows[0]));
-  data.table.rows.forEach((row, idx)=>{
-    if(!row.c || !row.c[0] || row.c[0].v === null || row.c[0].v === undefined) return;
-    // 날짜 파싱 - 문자열 또는 Date 객체 모두 처리
-    let date = '';
-    const rawDate = row.c[0].v;
-    if(typeof rawDate === 'string' && rawDate.startsWith('Date(')){
-      // "Date(2026,3,7)" → "2026-04-07" (월은 0부터 시작)
-      const parts = rawDate.replace('Date(','').replace(')','').split(',');
-      const y = parts[0], m = String(parseInt(parts[1])+1).padStart(2,'0'), d = String(parts[2]).padStart(2,'0');
-      date = `${y}-${m}-${d}`;
-    } else if(typeof rawDate === 'string'){
-      date = rawDate.trim();
-    } else if(typeof rawDate === 'number'){
-      const d = new Date(Math.round((rawDate - 25569) * 86400 * 1000));
-      date = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+    const data = await api('login', { password: pw.value });
+    if(data.status === 'ok'){
+      (document.getElementById('login-remember').checked ? localStorage : sessionStorage).setItem(TOKEN_KEY, data.token);
+      pw.value = '';
+      unlock(); syncAll();
     } else {
-      date = String(rawDate).trim();
+      err.textContent = data.status==='denied' ? '비밀번호가 틀렸어요'
+        : data.status==='locked' ? '시도 횟수 초과 — 10분 후 다시 시도해주세요'
+        : (data.msg || '로그인 실패');
     }
-    // 헤더 건너뛰기
-    if(date === '날짜' || date === 'A (날짜)') return;
-    const grade = parseInt(row.c[1] ? row.c[1].v : 0);
-    const cls   = parseInt(row.c[2] ? row.c[2].v : 0);
-    const name  = row.c[3] ? String(row.c[3].v).trim() : '';
-    if(!date || !grade || !cls || !name) return;
+  }catch(e){ console.error('login error:', e); err.textContent = '서버에 연결할 수 없어요'; }
+  btn.disabled = false; btn.textContent = '로그인';
+}
+
+function logout(expired){
+  clearAuth();
+  students = []; dailyLogs = {}; checked = new Set(); baseline = new Set(); dirty = false; selGrade = selCls = null;
+  document.getElementById('note').value = '';
+  renderAll();
+  lock();
+  if(expired === true) document.getElementById('login-err').textContent = '로그인이 만료됐어요. 다시 로그인해주세요.';
+}
+
+// ── 데이터 적용 ──
+function applyStudents(list){
+  students = list.map((s, i)=>({
+    i, grade: s.grade, cls: s.cls, num: s.num, name: s.name,
+    key: skey(s.grade, s.cls, s.name),
+    gender: (s.gender==='여' || s.gender==='여자') ? 'f' : 'm',
+  }));
+}
+
+function applyLogs(rows){
+  const logs = {};
+  rows.forEach(({date, grade, cls, name})=>{
     const k = `${grade}-${cls}`;
-    if(!newLogs[date]) newLogs[date] = { dateStr: date, violations: {} };
-    if(!newLogs[date].violations[k]) newLogs[date].violations[k] = { grade, cls, students: [] };
-    if(!newLogs[date].violations[k].students.includes(name))
-      newLogs[date].violations[k].students.push(name);
+    if(!logs[date]) logs[date] = { dateStr: date, violations: {} };
+    if(!logs[date].violations[k]) logs[date].violations[k] = { grade, cls, students: [] };
+    if(!logs[date].violations[k].students.includes(name)) logs[date].violations[k].students.push(name);
   });
-  console.log('파싱된 logs:', JSON.stringify(newLogs));
-  if(Object.keys(newLogs).length === 0) return false;
-  dailyLogs = newLogs;
-  localStorage.setItem('logs_cache', JSON.stringify(dailyLogs));
+  dailyLogs = logs;
+}
+
+// 체크 상태를 시트에 저장된 오늘 기록으로 맞춤 (저장 안 한 변경은 force일 때만 버림)
+function resetToSaved(force){
+  if(dirty && !force) return;
+  const saved = new Set(), log = dailyLogs[currentDay];
+  if(log) Object.values(log.violations).forEach(v=>v.students.forEach(n=>saved.add(skey(v.grade, v.cls, n))));
+  baseline = saved; checked = new Set(saved); dirty = false;
+}
+
+// 같은 반 동명이인은 기록에서 구분할 수 없으므로 경고
+function duplicateNames(){
+  const seen = new Set(), dup = new Set();
+  students.forEach(s=>{ seen.has(s.key) ? dup.add(`${s.grade}학년 ${s.cls}반 ${s.name}`) : seen.add(s.key); });
+  return [...dup];
+}
+
+// 탭을 열어둔 채 날짜가 바뀌면 전날 체크가 오늘 기록으로 저장되지 않도록 초기화
+function checkDay(){
+  if(dateKey() === currentDay) return false;
+  currentDay = dateKey();
+  document.getElementById('header-date').textContent = todayStr();
+  document.getElementById('note').value = '';
+  resetToSaved(true);
+  renderAll();
   return true;
 }
 
+function renderAll(){ renderNav(); renderList(); buildWeekSel(); renderWeekly(); }
+
 // ── 전체 동기화 ──
 async function syncAll(){
+  if(!getToken()){ lock(); return; }
+  checkDay();
   setStatus('busy', '시트에서 불러오는 중...');
   try{
-    const [stuOk, logOk] = await Promise.all([loadStudents(), loadLogs()]);
-    renderNav(); buildWeekSel(); renderWeekly();
-    if(stuOk){
+    const data = await api('read');
+    if(data.status !== 'ok') throw new Error(data.msg || '불러오기 실패');
+    applyStudents(data.students); applyLogs(data.logs);
+    localStorage.setItem(CACHE_STU, JSON.stringify(data.students));
+    localStorage.setItem(CACHE_LOG, JSON.stringify(data.logs));
+    resetToSaved(false);
+    renderAll();
+    const dups = duplicateNames();
+    if(dups.length){
+      console.warn('같은 반 동명이인:', dups);
+      setStatus('error', `동명이인 ${dups.length}건 — 학생 시트 확인 필요`);
+      showToast(`같은 반 동명이인: ${dups.join(', ')}`);
+    } else if(students.length){
       setStatus('ok', `시트 연결됨 · ${students.length}명`);
       showToast(`학생 ${students.length}명 불러왔어요`);
     } else {
-      setStatus('ok', '시트 연결됨 (학생 데이터 없음)');
-      showToast('시트 "학생" 탭에 데이터가 없거나 읽기 실패 — 콘솔(F12) 확인');
+      setStatus('error', '시트 "학생" 탭에 데이터가 없어요');
     }
   }catch(e){
-    // 로컬 캐시로 폴백
-    const sc = localStorage.getItem('students_cache');
-    const lc = localStorage.getItem('logs_cache');
-    if(sc) students = JSON.parse(sc);
-    if(lc) dailyLogs = JSON.parse(lc);
-    renderNav(); buildWeekSel();
+    if(e instanceof AuthError){ logout(true); return; }
+    console.error('syncAll error:', e);
     setStatus('error', '시트 연결 실패 — 로컬 캐시 사용 중');
-    showToast('인터넷 연결을 확인해주세요');
-  }
-}
-
-// ── 시트에 기록 저장 ──
-async function pushLog(dateStr, violations){
-  const rows = [];
-  Object.values(violations).forEach(v=>{
-    v.students.forEach(name => rows.push([dateStr, v.grade, v.cls, name]));
-  });
-  try{
-    const payload = encodeURIComponent(JSON.stringify({ action: 'saveLog', rows, deleteDate: dateStr }));
-    const res = await fetch(`${APPS_URL}?data=${payload}`);
-    const result = await res.json();
-    if(result.status !== 'ok') throw new Error(result.msg||'저장 실패');
-  }catch(e){
-    console.error('pushLog error:', e);
-    throw e;
+    showToast('시트 연결 실패 — 인터넷 연결을 확인해주세요');
   }
 }
 
 // ── 체크 저장 ──
+// 시트의 오늘 기록과 비교해 추가·해제된 학생만 보냄 → 다른 기기 기록은 유지
 async function saveDaily(){
-  const key = dateKey();
-  const viols = {};
-  students.filter(s=>checked.has(s.id)).forEach(s=>{
-    const k = `${s.grade}-${s.cls}`;
-    if(!viols[k]) viols[k] = { grade: s.grade, cls: s.cls, students: [] };
-    viols[k].students.push(s.name);
-  });
+  if(checkDay()){ showToast('날짜가 바뀌어 체크를 초기화했어요. 다시 체크해주세요'); syncAll(); return; }
+  const add    = [...checked].filter(k=>!baseline.has(k)).map(fromKey);
+  const remove = [...baseline].filter(k=>!checked.has(k)).map(fromKey);
+  if(!add.length && !remove.length){ showToast('변경된 내용이 없어요'); return; }
+  if(remove.length && !confirm(`체크 해제한 ${remove.length}명(${remove.map(x=>x.name).join(', ')})을 오늘 기록에서 삭제할까요?`)) return;
 
-  if(!checked.size){
-    if(!dailyLogs[key]){ showToast('오늘 저장된 기록이 없어요'); return; }
-    if(!confirm('오늘 기록을 전부 삭제하시겠습니까?')) return;
-    delete dailyLogs[key];
-    localStorage.setItem('logs_cache', JSON.stringify(dailyLogs));
-    buildWeekSel();
-    setStatus('busy', '시트에서 삭제 중...');
-    try{
-      await pushLog(key, {});
-      setStatus('ok', `시트 연결됨 · ${students.length}명`);
-      showToast('오늘 기록이 삭제됐어요');
-    }catch(e){
-      setStatus('error', '시트 저장 실패');
-      showToast('❌ 시트 저장 실패 — F12 콘솔 확인');
-    }
-  } else {
-    const isUpdate = !!dailyLogs[key];
-    dailyLogs[key] = { dateStr: todayStr(), violations: viols, note: document.getElementById('note').value };
-    localStorage.setItem('logs_cache', JSON.stringify(dailyLogs));
-    buildWeekSel();
-    setStatus('busy', '시트에 저장 중...');
-    try{
-      await pushLog(key, viols);
-      setStatus('ok', `시트 연결됨 · ${students.length}명`);
-      showToast(isUpdate ? '오늘 기록이 수정됐어요 ✓' : '오늘 기록이 저장됐어요 ✓');
-      // 3초 후 시트에서 다시 불러와서 다른 기기 데이터와 합치기
-      setTimeout(async ()=>{
-        await loadLogs();
-        buildWeekSel();
-      }, 3000);
-    }catch(e){
-      setStatus('error', '시트 저장 실패');
-      showToast('❌ 시트 저장 실패 — Apps Script 재배포 필요');
-    }
+  setStatus('busy', '시트에 저장 중...');
+  try{
+    const data = await api('saveLog', { date: currentDay, add, remove });
+    if(data.status !== 'ok') throw new Error(data.msg || '저장 실패');
+    applyLogs(data.logs);
+    localStorage.setItem(CACHE_LOG, JSON.stringify(data.logs));
+    resetToSaved(true);
+    renderAll();
+    setStatus('ok', `시트 연결됨 · ${students.length}명`);
+    showToast(`오늘 기록 저장됨 ✓ (추가 ${add.length} · 삭제 ${remove.length})`);
+  }catch(e){
+    if(e instanceof AuthError){ logout(true); return; }
+    console.error('saveDaily error:', e);
+    setStatus('error', '시트 저장 실패');
+    showToast('❌ 시트 저장 실패 — 다시 시도해주세요');
   }
-  updateStats();
 }
 
 // ── 네비 렌더 ──
-function vcnt(g, c){ return students.filter(s=>checked.has(s.id)&&s.grade===g&&(c==null||s.cls===c)).length; }
+function vcnt(g, c){ return students.filter(s=>checked.has(s.key)&&s.grade===g&&(c==null||s.cls===c)).length; }
 
 function renderNav(){
   const grades = getGrades();
@@ -575,11 +590,11 @@ function renderList(){
   updateStats();
   if(!filtered.length){ el.innerHTML='<div class="empty"><strong>학생 없음</strong></div>'; return; }
   el.innerHTML = filtered.map(s=>{
-    const on = checked.has(s.id);
-    return `<div class="s-row ${on?'on':''}" onclick="toggleStudent('${s.id}')">
-      <div class="av ${on?'viol':(s.gender==='f'?'f':'m')}">${on?'✕':s.name[0]}</div>
+    const on = checked.has(s.key);
+    return `<div class="s-row ${on?'on':''}" onclick="toggleStudent(${s.i})">
+      <div class="av ${on?'viol':(s.gender==='f'?'f':'m')}">${on?'✕':esc(s.name[0])}</div>
       <div class="s-info">
-        <div class="s-name">${s.num}. ${s.name}<span class="badge ${on?'r':'g'}">${on?'미착용':'정상'}</span></div>
+        <div class="s-name">${s.num}. ${esc(s.name)}<span class="badge ${on?'r':'g'}">${on?'미착용':'정상'}</span></div>
         <div class="s-meta">${s.gender==='f'?'여학생':'남학생'}</div>
       </div>
       <div class="chk ${on?'on':''}"></div>
@@ -589,25 +604,28 @@ function renderList(){
 
 function updateStats(){
   document.getElementById('s-viol').textContent = checked.size;
-  const cs = new Set(students.filter(s=>checked.has(s.id)).map(s=>`${s.grade}-${s.cls}`));
+  const cs = new Set([...checked].map(k=>{ const x=fromKey(k); return `${x.grade}-${x.cls}`; }));
   document.getElementById('s-cls').textContent = cs.size;
 }
 
-function toggleStudent(id){
-  checked.has(id) ? checked.delete(id) : checked.add(id);
+function toggleStudent(i){
+  const k = students[i].key;
+  checked.has(k) ? checked.delete(k) : checked.add(k);
+  dirty = true;
   renderNav(); renderList();
 }
 
-function clearChecked(){
-  checked.clear();
+// 저장하지 않은 체크 변경을 버리고 시트에 저장된 상태로 되돌림
+function revertChecked(){
+  resetToSaved(true);
   document.getElementById('note').value = '';
   renderNav(); renderList();
-  showToast('초기화 완료');
+  showToast('저장된 상태로 되돌렸어요');
 }
 
 // ── 주간 리포트 ──
 function buildWeekSel(){
-  const weeks = new Set(Object.keys(dailyLogs).map(k=>weekMonKey(new Date(k))));
+  const weeks = new Set(Object.keys(dailyLogs).map(k=>weekMonKey(k)));
   weeks.add(weekMonKey());
   const sorted = [...weeks].sort().reverse();
   const sel = document.getElementById('week-select'), cur = sel.value;
@@ -618,7 +636,7 @@ function buildWeekSel(){
 function renderWeekly(){
   const wk = document.getElementById('week-select').value;
   if(!wk) return;
-  const dayEntries = weekDays(wk).map(dk=>({dk,d:new Date(dk),log:dailyLogs[dk]||null})).filter(x=>x.log);
+  const dayEntries = weekDays(wk).map(dk=>({dk,d:parseDate(dk),log:dailyLogs[dk]||null})).filter(x=>x.log);
 
   let totalV=0; const clsSet=new Set();
   dayEntries.forEach(({log})=>Object.entries(log.violations).forEach(([k,v])=>{totalV+=v.students.length;clsSet.add(k);}));
@@ -638,7 +656,7 @@ function renderWeekly(){
   dayEntries.forEach(({d,log})=>{
     const label = `${d.getMonth()+1}/${d.getDate()}(${DAY_KO[d.getDay()]})`;
     const names = Object.values(log.violations).flatMap(v=>v.students.map(n=>`${v.cls}반 ${n}`));
-    dlHtml += `<div class="day-row"><div class="day-label">${label}</div><div class="day-names">${names.join(', ')}</div><div class="day-cnt">${names.length}명</div></div>`;
+    dlHtml += `<div class="day-row"><div class="day-label">${label}</div><div class="day-names">${esc(names.join(', '))}</div><div class="day-cnt">${names.length}명</div></div>`;
   });
   dlHtml += '</div>';
   document.getElementById('day-log-area').innerHTML = dlHtml;
@@ -667,7 +685,7 @@ function renderWeekly(){
         </div>
         <button class="copy-btn" onclick="copyCard('${cardId}')">복사</button>
       </div>
-      <div class="mc-body">${msg}</div>
+      <div class="mc-body">${esc(msg)}</div>
     </div>`;
   });
   const allId = 'card_all';
@@ -708,7 +726,7 @@ function renderWeekly(){
         </div>
         <button class="copy-btn" onclick="copyCard('${cardId}')">복사</button>
       </div>
-      <div class="mc-body">${msg}</div>
+      <div class="mc-body">${esc(msg)}</div>
     </div>`;
   });
   const gAllId = 'gcard_all';
@@ -790,15 +808,28 @@ function switchMsgTab(t){
 function showToast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2500); }
 
 // ── 초기화 ──
-// 로컬 캐시 먼저 적용 (오프라인 지원)
-const sc = localStorage.getItem('students_cache');
-const lc = localStorage.getItem('logs_cache');
-if(sc) students = JSON.parse(sc);
-if(lc) dailyLogs = JSON.parse(lc);
-renderNav(); buildWeekSel();
+document.getElementById('header-date').textContent = todayStr();
 
-// 시트에서 최신 데이터 불러오기
-syncAll();
+// 다른 날 열어둔 탭으로 돌아오면 날짜 확인 후 다시 불러오기
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'visible' && getToken() && checkDay()) syncAll();
+});
+
+if(getToken()){
+  unlock();
+  // 로컬 캐시 먼저 적용 (오프라인 지원)
+  const sc = localStorage.getItem(CACHE_STU);
+  const lc = localStorage.getItem(CACHE_LOG);
+  if(sc) applyStudents(JSON.parse(sc));
+  if(lc) applyLogs(JSON.parse(lc));
+  resetToSaved(true);
+  renderAll();
+  // 시트에서 최신 데이터 불러오기
+  syncAll();
+} else {
+  clearAuth(); // 로그인 전에는 이 기기에 학생 명단을 남기지 않음
+  lock();
+}
 </script>
 </body>
 </html>
